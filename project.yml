@@ -1,0 +1,222 @@
+# The Xcode project is GENERATED from this file by xcodegen, not hand-edited.
+# A .pbxproj is 700 lines of UUIDs that no human reviews and every merge
+# conflicts on; this is the same information in a form that can be read.
+#   brew install xcodegen && cp signing.yml.example signing.yml && xcodegen generate
+name: Agents
+include:
+  - path: signing.yml
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+packages:
+  # "Hey Atlas". Pinned to a commit: the README only shows `branch: main`,
+  # and an unpinned wake-word engine can change what it hears between two
+  # builds with nothing in this repo having changed.
+  LiveKitWakeWord:
+    url: https://github.com/livekit/livekit-wakeword
+    revision: 95448a7559c453fcd87645bd67b247ffb45f85b0
+  # LiveKitWakeWord asks for onnxruntime `from: 1.20.0` and Package.resolved is
+  # gitignored, so without this pin a fresh resolve swaps the runtime under it.
+  onnxruntime:
+    url: https://github.com/microsoft/onnxruntime-swift-package-manager
+    exactVersion: 1.24.2
+targets:
+  Agents:
+    type: application
+    platform: iOS
+    sources:
+      # Info.plist is the INFOPLIST_FILE below, not a resource - left in the
+      # sources it is also copied into the bundle, and the build fails with
+      # "Multiple commands produce .../Info.plist".
+      - path: Agents
+        excludes: [Info.plist]
+    dependencies:
+      # Embeds the extension that draws the control and the Live Activity.
+      - target: AgentsWidgets
+      - package: LiveKitWakeWord
+        product: LiveKitWakeWord
+    # THE ORDER OF keychain-access-groups IS LOAD-BEARING. The FIRST entry is
+    # the group a keychain item lands in when SecItemAdd is called without an
+    # explicit kSecAttrAccessGroup - which is exactly how TokenStore.save
+    # writes. With the shared group first, both apps write the token to the
+    # same place without either of them having to know the team prefix at
+    # runtime. A search with no group set still spans every group the app is
+    # entitled to, including its own implicit bundle group, which is what makes
+    # the token migration a three-line function instead of a probe.
+    #
+    # PUSH: THE ENTITLEMENT IS THE WHOLE CONFIGURATION on this side.
+    # `xcodebuild -allowProvisioningUpdates` does the rest by itself - it
+    # enables Push Notifications on the App ID, moves the target off the team
+    # wildcard profile (a wildcard App ID cannot carry push) onto an explicit
+    # com.example.agents one, and mints a profile granting aps-environment. No
+    # step in the developer portal is needed.
+    #
+    # It does NOT do that against a stale profile cache. If a build ever comes
+    # out without push, delete the cached profiles and build again:
+    #   rm ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/*.mobileprovision
+    entitlements:
+      path: Agents.entitlements
+      properties:
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)com.example.shared
+        # HERE, NOT IN Agents.entitlements. xcodegen REGENERATES that file from
+        # this block on every `xcodegen generate`, so a key added to the plist
+        # by hand survives exactly until the next regeneration - and then the
+        # build quietly signs without it again. Successful build, installed
+        # app, and a phone that simply never buzzes after a nine-minute turn.
+        #
+        # THIS LINE ALSO CHANGES WHICH APP ID THE BUILD USES. A wildcard App ID
+        # (TEAMID.*) cannot carry Push Notifications - Apple does not allow
+        # it - so the moment this entitlement exists, automatic signing stops
+        # using the team wildcard profile and mints an explicit App ID for
+        # com.example.agents with push enabled. That needs
+        # -allowProvisioningUpdates on the xcodebuild line.
+        #
+        # "development" IS CORRECT FOR EVERY BUILD THIS RACK SIGNS, and is not
+        # a debug-only value: a Release build installed with a development
+        # profile still gets a SANDBOX device token. PushRegistrar reads this
+        # back out of the embedded profile at runtime and tells the hub which
+        # APNs host to use, rather than guessing from #if DEBUG - see
+        # apsEnvironment there, and hub/push.js for what guessing wrong costs.
+        aps-environment: development
+    postBuildScripts:
+      # AN APP THAT CANNOT RECEIVE A NOTIFICATION LOOKS EXACTLY LIKE ONE THAT
+      # HAS NOTHING TO SAY, and that is why this is a build failure rather than
+      # a note in a README. The failure it exists to catch: aps-environment
+      # added to Agents.entitlements by hand, and the next `xcodegen generate`
+      # regenerates that file from project.yml and drops it. The build stays
+      # green, the app installs and runs, and the only symptom is a phone that
+      # never buzzes - weeks later, with nothing to grep for.
+      #
+      # READS THE .xcent, NOT THE SIGNED BUNDLE. `codesign -d` on the product
+      # is the obvious check and it does not work here: ENABLE_USER_SCRIPT_SANDBOXING
+      # is YES, so codesign is denied read on the .app and reports an EMPTY
+      # entitlement set - which this script would read as "push is missing" on
+      # every build, forever. The .xcent is the exact plist Xcode hands to
+      # `codesign --entitlements`, so it is what actually ships, and declaring
+      # it as an input is what the sandbox wants.
+      - name: Verify the push entitlement survived signing
+        basedOnDependencyAnalysis: false
+        inputFiles:
+          - $(SRCROOT)/Agents.entitlements
+          - $(TEMP_DIR)/$(PRODUCT_NAME).app.xcent
+        script: |
+          set -eu
+          # DEVICE BUILDS ONLY. The Simulator has no APNs at all, so Xcode
+          # strips aps-environment out of the .xcent it signs there - which
+          # this check reads as "the profile does not grant it" and fails the
+          # build. This repo has a test target and runs it on the Simulator, so
+          # without this line every `xcodebuild test` goes red on a machine
+          # where nothing is wrong.
+          case "${PLATFORM_NAME:-}" in *simulator) exit 0 ;; esac
+          src="$SRCROOT/Agents.entitlements"
+          eff="$TEMP_DIR/$PRODUCT_NAME.app.xcent"
+          want=$(plutil -extract aps-environment raw -o - "$src" 2>/dev/null || true)
+          # No aps-environment in the source means push is deliberately off.
+          [ -n "$want" ] || exit 0
+          [ -f "$eff" ] || { echo "warning: no $eff to check"; exit 0; }
+          got=$(plutil -extract aps-environment raw -o - "$eff" 2>/dev/null || true)
+          if [ "$got" != "$want" ]; then
+            echo "error: the entitlements ask for aps-environment=$want, but the app is being signed with \"$got\"."
+            echo "error: The profile does not grant it. Almost always a stale profile cache:"
+            echo "error:   rm ~/Library/Developer/Xcode/UserData/Provisioning\\ Profiles/*.mobileprovision"
+            echo "error: then rebuild with -allowProvisioningUpdates, which re-mints one that does."
+            exit 1
+          fi
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.agents
+        # Xcode synthesises Info.plist from the INFOPLIST_KEY_* settings below,
+        # but only when this is on - without it the build fails at code signing
+        # with "the target does not have an Info.plist file".
+        GENERATE_INFOPLIST_FILE: YES
+        # ONE KEY lives in this file - UIBackgroundModes - because the plist
+        # generator silently drops an INFOPLIST_KEY_UIBackgroundModes setting.
+        # GENERATE_INFOPLIST_FILE stays YES and merges everything else in.
+        INFOPLIST_FILE: Agents/Info.plist
+        INFOPLIST_KEY_NSSupportsLiveActivities: YES
+        CODE_SIGN_STYLE: Automatic
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        INFOPLIST_KEY_CFBundleDisplayName: Agents
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+        # iOS KILLS THE APP on the first mic or speech request without these -
+        # no prompt, no error, just gone. The wording is what the prompt shows.
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Agents listens when you tap the mic or press Talk to Atlas, so you can ask Atlas out loud."
+        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "What you say is turned into text on this iPhone and sent to Atlas as your message."
+        SWIFT_VERSION: "6.0"
+        ENABLE_USER_SCRIPT_SANDBOXING: YES
+        TARGETED_DEVICE_FAMILY: "1"
+  # The control (Action Button, Control Center, lock screen) and the Live
+  # Activity's views. NO APP LOGIC HERE: the intents it names run in the app's
+  # process. The three files in Agents/Voice/Shared are compiled into both
+  # targets, and WIDGET_EXTENSION is how they tell which one they are in.
+  AgentsWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: AgentsWidgets
+        excludes: [Info.plist]
+      - Agents/Voice/Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.agents.widgets
+        INFOPLIST_FILE: AgentsWidgets/Info.plist
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Agents
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: "6.0"
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WIDGET_EXTENSION"
+        # Archived inside the app, never as a top-level product of its own.
+        SKIP_INSTALL: YES
+        # A compile error, not a runtime surprise, for app-only APIs in here.
+        APPLICATION_EXTENSION_API_ONLY: YES
+        ENABLE_USER_SCRIPT_SANDBOXING: YES
+        TARGETED_DEVICE_FAMILY: "1"
+  # Unit tests only - no UI tests. Everything worth asserting in this app is a
+  # value type (which agent, which thread, is the drawer open); a UI test would
+  # boot a simulator to re-check what a struct already decides.
+  AgentsTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [AgentsTests]
+    dependencies:
+      - target: Agents
+    settings:
+      base:
+        # Pinned rather than derived. xcodegen defaults a bundle id from the
+        # TARGET NAME, which would make this com.example.AgentsTests - capital
+        # A, a different app id from the app's own com.example.agents, needing
+        # a provisioning profile of its own the first time the suite runs on a
+        # phone. It is pinned HERE, in the tracked file, rather than alongside
+        # DEVELOPMENT_TEAM in gitignored signing.yml, because only the team is
+        # account-specific: a bundle id left out of git is one a fresh clone
+        # silently regenerates with the capital A back and nothing to notice it.
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.agents-tests
+        SWIFT_VERSION: "6.0"
+        GENERATE_INFOPLIST_FILE: YES
+
+# Defined explicitly because xcodegen generates NO schemes unless they are
+# declared here. Without this block the only scheme named Agents is one Xcode
+# auto-creates into gitignored xcuserdata/ the first time someone opens the
+# project - so `xcodebuild test -scheme Agents` works on that machine and
+# fails on every fresh clone and in CI with "scheme Agents not found".
+# The test action below must also list AgentsTests: a scheme whose test action
+# is empty makes xcodebuild print ** TEST SUCCEEDED ** having run nothing,
+# which is the worst possible way for a test suite to fail.
+schemes:
+  Agents:
+    build:
+      targets:
+        Agents: all
+        AgentsTests: [test]
+    test:
+      targets:
+        - AgentsTests

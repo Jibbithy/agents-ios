@@ -1,0 +1,4 @@
+# Copy to signing.yml (gitignored) and set your own Apple team to sign for a device.
+settings:
+  base:
+    DEVELOPMENT_TEAM: ""

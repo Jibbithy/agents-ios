@@ -1,0 +1,14 @@
+.DS_Store
+build/
+DerivedData/
+*.xcodeproj
+xcuserdata/
+signing.yml
+# xcodegen generates this from project.yml, like the .xcodeproj itself.
+*.entitlements
+.env
+.env.*
+.DS_Store
+signing.yml
+build/
+DerivedData/
