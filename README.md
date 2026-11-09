@@ -1,5 +1,7 @@
 # Agents
 
+[![CI](https://github.com/Jibbithy/agents-ios/actions/workflows/ci.yml/badge.svg)](https://github.com/Jibbithy/agents-ios/actions/workflows/ci.yml)
+
 A native iOS app for chatting with self-hosted AI agents. It supports text and voice conversations, photo attachments, wake word detection, widgets and Live Activities, and approving agent actions from your phone.
 
 Built with SwiftUI, AVFoundation, ActivityKit, WidgetKit and App Intents. Includes 403 unit tests.
