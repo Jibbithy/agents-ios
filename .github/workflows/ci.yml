@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Build and test
+    # Xcode 27 image: the code calls iOS 27 SDK APIs behind #available checks,
+    # which the Xcode 26 toolchain on macos-latest cannot compile.
+    runs-on: xcode-27
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: |
+          cp signing.yml.example signing.yml
+          xcodegen generate
+
+      - name: Pick an iPhone simulator
+        id: sim
+        run: |
+          udid=$(python3 - <<'PY'
+          import json, subprocess
+          out = subprocess.run(["xcrun", "simctl", "list", "devices", "available", "-j"],
+                               check=True, capture_output=True, text=True).stdout
+          best = None
+          for runtime, devices in json.loads(out)["devices"].items():
+              if ".SimRuntime.iOS-" not in runtime:
+                  continue
+              version = tuple(int(p) for p in runtime.rsplit("iOS-", 1)[1].split("-"))
+              for d in devices:
+                  if d.get("isAvailable") and d["name"].startswith("iPhone"):
+                      if best is None or version > best[0]:
+                          best = (version, d["udid"], d["name"])
+                      break
+          if best is None:
+              raise SystemExit("no available iPhone simulator")
+          print(best[1])
+          PY
+          )
+          echo "Using simulator $udid"
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
+
+      - name: Build and test
+        env:
+          SIM_UDID: ${{ steps.sim.outputs.udid }}
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project Agents.xcodeproj \
+            -scheme Agents \
+            -destination "id=$SIM_UDID" \
+            CODE_SIGNING_ALLOWED=NO \
+            | xcbeautify --renderer github-actions
