@@ -11,7 +11,9 @@ struct Endpointer {
     enum Ending: Equatable { case spoke, silent }
 
     /// Quiet after the last new word before the question counts as asked.
-    static let pause: TimeInterval = 1.5
+    /// 1.5 s cut people off at a thinking pause mid-sentence (2026-09-25);
+    /// the cost is that much longer before Atlas starts answering.
+    static let pause: TimeInterval = 2.5
     /// How long to wait for a first word before ending quietly.
     static let noSpeech: TimeInterval = 5
 

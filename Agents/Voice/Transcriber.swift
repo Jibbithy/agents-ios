@@ -59,6 +59,10 @@ final class Transcriber: Listening {
     private var clock: Task<Void, Never>?
     private var endpointer = Endpointer(started: .now)
     private var heard = ""
+    /// What the recogniser dropped when it started over after a pause, and
+    /// its own text since - `heard` is the two together. See `revision`.
+    private var kept = ""
+    private var latest = ""
     private var waiting: CheckedContinuation<String?, Error>?
     /// Which listen is the current one, so that a late callback from an
     /// earlier listen's recognition cannot end this one.
@@ -76,7 +80,7 @@ final class Transcriber: Listening {
         // would overwrite the first one's continuation and leave it hanging.
         assert(waiting == nil, "Transcriber.listen called while a listen is in progress")
         endedEarly = false
-        heard = ""
+        heard = ""; kept = ""; latest = ""
         listens += 1
         let id = listens
         guard await Self.permitted() else { throw VoiceError.notAllowed }
@@ -100,16 +104,26 @@ final class Transcriber: Listening {
                 // Late callbacks - the error that cancelling a recognition
                 // fires, or anything after this listen is over - are dropped.
                 guard let self, self.listens == id, self.waiting != nil else { return }
-                if let text = Self.revision(of: self.heard, to: text) {
-                    self.heard = text
+                if let next = Self.revision(kept: self.kept, latest: self.latest, to: text) {
+                    if next.kept.count > self.kept.count {
+                        Logger.voice.notice("Voice: the recogniser started over; keeping the \(BargeIn.words(next.kept).count, privacy: .public) words before it")
+                    }
+                    (self.kept, self.latest) = next
+                    self.heard = Self.joined(next.kept, next.latest)
                     // ANY change counts, a punctuation fix included: a revision
                     // means the recogniser is still working on what was said.
                     self.endpointer.heard(at: .now)
-                    onWords(text)
+                    onWords(self.heard)
                 } else if done, text?.isEmpty == true, !self.heard.isEmpty {
                     Logger.voice.notice("Voice: the recogniser's final result was empty; keeping the \(BargeIn.words(self.heard).count, privacy: .public)-word transcript")
                 }
                 guard done else { return }
+                // Audio still routed = nobody asked it to stop: the recogniser
+                // ended the listen by itself, possibly while you were talking.
+                if self.request != nil {
+                    let gap = self.endpointer.lastWord.map { Date.now.timeIntervalSince($0) } ?? -1
+                    Logger.voice.notice("Voice: the recogniser finished on its own after \(BargeIn.words(self.heard).count, privacy: .public) words, \(gap, format: .fixed(precision: 1), privacy: .public) s after the last one")
+                }
                 let failed = error.map { !Self.heardNoSpeech($0) } ?? false
                 if let error {
                     Logger.voice.notice("Voice: the recogniser ended with \(error.domainAndCode, privacy: .public)\(failed ? "" : " (no speech)", privacy: .public)")
@@ -138,7 +152,10 @@ final class Transcriber: Listening {
                 } while ending == nil
                 // ...then, if anything was said, a moment for the final
                 // result. Nothing said, nothing to wait for.
-                if ending == .spoke { self?.settle() } else { self?.complete() }
+                if ending == .spoke {
+                    Logger.voice.notice("Voice: a \(Endpointer.pause, format: .fixed(precision: 1), privacy: .public) s pause ended the question after \(BargeIn.words(self?.heard ?? "").count, privacy: .public) words")
+                    self?.settle()
+                } else { self?.complete() }
             }
         }
     }
@@ -154,7 +171,7 @@ final class Transcriber: Listening {
     /// Stop now and return nil. With no listen going, nothing.
     func cancel() {
         guard waiting != nil else { endedEarly = true; return }
-        heard = ""
+        heard = ""; kept = ""; latest = ""
         complete()
     }
 
@@ -225,9 +242,30 @@ final class Transcriber: Listening {
     /// Taken as a revision it emptied the transcript at the last moment, the
     /// listen returned nothing, and the conversation silently listened again.
     /// The partial is what was said; the empty final is noise.
-    nonisolated static func revision(of heard: String, to text: String?) -> String? {
-        guard let text, !text.isEmpty, text != heard else { return nil }
-        return text
+    ///
+    /// A RESULT THAT STARTS OVER IS ADDED TO, NOT TAKEN AS A REVISION. After a
+    /// pause of a second or two, iOS 18's recogniser (Apple forum 770278)
+    /// throws away everything said so far and reports only the words since:
+    /// shorter, and starting on a different word. Taken as a revision it
+    /// emptied the bubble mid-sentence and sent Atlas only the last part
+    /// (2026-10-21, "it forgets everything I said"). So the old text is
+    /// `kept` and the new text goes after it. A result that begins with
+    /// everything `kept` is the whole transcript again - a recogniser that
+    /// did not start over after all - and replaces it.
+    nonisolated static func revision(kept: String, latest: String, to text: String?) -> (kept: String, latest: String)? {
+        guard let text, !text.isEmpty, text != latest else { return nil }
+        let new = BargeIn.words(text), old = BargeIn.words(latest), before = BargeIn.words(kept)
+        if !before.isEmpty, new.starts(with: before), new.count >= before.count + old.count - 1 {
+            return ("", text)
+        }
+        if old.count >= 2, new.count < old.count, new.first != old.first {
+            return (joined(kept, latest), text)
+        }
+        return (kept, text)
+    }
+
+    nonisolated static func joined(_ kept: String, _ latest: String) -> String {
+        kept.isEmpty ? latest : latest.isEmpty ? kept : kept + " " + latest
     }
 
     /// kAFAssistantErrorDomain 1110, "Failed to recognize any speech" (see

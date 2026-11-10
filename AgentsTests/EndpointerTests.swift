@@ -14,8 +14,8 @@ final class EndpointerTests: XCTestCase {
     func testAQuestionEndsAPauseAfterTheLastNewWord() {
         var e = Endpointer(started: t0)
         e.heard(at: t0 + 2)
-        XCTAssertNil(e.ending(at: t0 + 3.4))
-        XCTAssertEqual(e.ending(at: t0 + 3.5), .spoke)
+        XCTAssertNil(e.ending(at: t0 + 4.4))
+        XCTAssertEqual(e.ending(at: t0 + 4.5), .spoke)
     }
 
     /// Still talking, however long it takes: every new word restarts the pause.
@@ -23,8 +23,8 @@ final class EndpointerTests: XCTestCase {
         var e = Endpointer(started: t0)
         e.heard(at: t0 + 2)
         e.heard(at: t0 + 3)
-        XCTAssertNil(e.ending(at: t0 + 4.4))
-        XCTAssertEqual(e.ending(at: t0 + 4.5), .spoke)
+        XCTAssertNil(e.ending(at: t0 + 5.4))
+        XCTAssertEqual(e.ending(at: t0 + 5.5), .spoke)
     }
 
     /// The listen over an answer: open for as long as Atlas talks, however
@@ -39,8 +39,16 @@ final class EndpointerTests: XCTestCase {
     func testAPatientListenStillEndsAPauseAfterTheLastWord() {
         var e = Endpointer(started: t0, patient: true)
         e.heard(at: t0 + 30)
-        XCTAssertNil(e.ending(at: t0 + 31.4))
-        XCTAssertEqual(e.ending(at: t0 + 31.5), .spoke)
+        XCTAssertNil(e.ending(at: t0 + 32.4))
+        XCTAssertEqual(e.ending(at: t0 + 32.5), .spoke)
+    }
+
+    /// A thinking pause mid-sentence is not the end: 1.5 s cut people off
+    /// halfway (2026-09-25), so two seconds of quiet still keeps listening.
+    func testATwoSecondThinkingPauseDoesNotEndTheQuestion() {
+        var e = Endpointer(started: t0)
+        e.heard(at: t0 + 1)
+        XCTAssertNil(e.ending(at: t0 + 3))
     }
 
     /// Once someone has spoken, the five-second give-up no longer applies.
